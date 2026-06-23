@@ -1,0 +1,171 @@
+---
+title: "Final Project 2"
+author: "Tate Conner"
+date: "2026-06-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Setup and Tidying Data
+Ensuring that the necessary library is installed and reading in data. The imported data contains various COVID-19 statistics for the US and the enitre world, as well as an additional final to
+provide population statistics for each country in the global data set.
+```{r, echo=TRUE, results='hide', error=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+uscases = read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv")
+globalcases = read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv")
+usdeaths = read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv")
+globaldeaths = read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv")
+uid = read_csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv")
+```
+
+After taking a look at the raw data files, it's clear some work needs to be done to make the data easier to work with. To do so, I will be removing the 'Lat' and 'Long' values from the global
+data sets and using the 'pivot_longer' to turn the dates, originally presented as columns, into rows. Then, we can combine the important values from both the global cases and global deaths
+data sets into a single file appended by date. Finally, since we're only interested in any dates when there are one or more cases, we can remove any rows where there are no confirmed cases.
+Additionally, because our US data set has useful variables "Combined_Key" (the name of the province or state appended to the country or region) and the population tied to said variable, we will use
+another data set from the website to add more information to our global data set.
+```{r}
+globalcases = globalcases %>% pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long), names_to = "date", values_to = "cases") %>% select(-c(Lat, Long))
+globaldeaths = globaldeaths %>% pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long), names_to = "date", values_to = "deaths") %>% select(-c(Lat, Long))
+global = globalcases %>% full_join(globaldeaths) %>% 
+  rename(Country_Region = 'Country/Region', Province_State = 'Province/State') %>% mutate(date = mdy(date))
+global = global %>% unite("Combined_Key", c(Province_State, Country_Region), sep = ", ", na.rm = TRUE, remove = FALSE)
+global = global %>% left_join(uid, by = c("Province_State", "Country_Region")) %>% select(-c(UID, FIPS))  %>%
+  select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key.x) %>% rename(Combined_Key = Combined_Key.x)
+```
+Next, we can do something similar to the US data sets.
+```{r}
+uscases = uscases %>% pivot_longer(cols = -(UID:Combined_Key), names_to = "date", values_to = "cases") %>% select(Admin2:cases) %>% 
+  mutate(date = mdy(date)) %>% select(-c(Lat, Long_))
+usdeaths = usdeaths %>% pivot_longer(cols = -(UID:Population), names_to = "date", values_to = "deaths") %>% select(Admin2:deaths) %>% 
+  mutate(date = mdy(date)) %>% select(-c(Lat, Long_))
+us = uscases %>% full_join(usdeaths)
+```
+## The US Data
+Let's visualize the US-specific data first, comparing COVID-19 cases in the US to those isolated to the state of Texas. Then, we can perform some analysis to see if the new cases and new deaths 
+reported per date are any different between Texas and the US. Finally, we will create a simple regression model to see if we can predict the deaths per 1000 people using the cases per 1000 people for
+each state represented in the US data.
+### Visualization
+Now that the data is tidied and transformed, we can start visualizing it. We can take our US data and group the important statistics by state as well as getting the totals for the entire country.
+Then, we can create some log-scaled visualizations of cases and deaths over time. As we can see, the trend for the chosen state of Texas closely aligns with the trend of the entire country.
+```{r}
+usstates = us %>% group_by(Province_State, Country_Region, date) %>% summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deathsperm = deaths * 1000000 / Population) %>% select(Province_State, Country_Region, date, cases, deaths, deathsperm, Population) %>% ungroup()
+ustotal = usstates %>% group_by(Country_Region, date) %>% summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deathsperm = deaths * 1000000 / Population) %>% select(Country_Region, date, cases, deaths, deathsperm, Population) %>% ungroup()
+ustotal %>% filter(cases > 0) %>% ggplot(aes(x = date, y = cases)) + geom_line(aes(color = "cases")) + geom_point(aes(color = "cases")) + geom_line(aes(y = deaths, color = "deaths")) + 
+  geom_point(aes(y = deaths, color = "deaths")) + scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = "COVID-19 in US", y = NULL)
+state = "Texas"
+usstates %>% filter(Province_State == state) %>% filter(cases > 0) %>% ggplot(aes(x = date, y = cases)) + geom_line(aes(color = "cases")) + geom_point(aes(color = "cases")) + 
+  geom_line(aes(y = deaths, color = "deaths")) + geom_point(aes(y = deaths, color = "deaths")) + scale_y_log10() + 
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = str_c("COVID-19 in ", state), y = NULL)
+```
+
+### Analysis
+Now, lets take out state and total data sets and create new variables the represent the number of new cases and deaths on each given date. These "new" variables are more helpful to analysis than the
+total statistics because it allows us to more accurately track the day-to-day changes in the progression of the pandemic. Our new graphs tell a similar story to the previous ones, the trend for a 
+given date in Texas is very similar to the trend on that same date in the broader US. As each of our graphs approaches late 2022 and early 2023, we can see that there starts to be a wider range in
+reported cases and deaths, which makes sens, as the progression of the virus began to slow as we learned more about its spread and containment. 
+```{r}
+usstates2 = usstates %>% mutate(new_cases = cases - lag(cases), new_deaths = deaths - lag(deaths))
+ustotal2 = ustotal %>% mutate(new_cases = cases - lag(cases), new_deaths = deaths - lag(deaths))
+ustotal2 %>% ggplot(aes(x = date, y = new_cases)) + geom_line(aes(color = "new_cases")) + geom_point(aes(color = "new_cases")) + geom_line(aes(y = new_deaths, color = "new_deaths")) + 
+  geom_point(aes(y = new_deaths, color = "new_deaths")) + scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = "COVID-19 in US", y = NULL)
+usstates2 %>% filter(Province_State == state) %>% ggplot(aes(x = date, y = new_cases)) + geom_line(aes(color = "new_cases")) + geom_point(aes(color = "new_cases")) + 
+  geom_line(aes(y = new_deaths, color = "new_deaths")) + geom_point(aes(y = new_deaths, color = "new_deaths")) + scale_y_log10() + 
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = str_c("COVID-19 in ", state), y = NULL)
+```
+
+We can also analyze our data by creating new "state total" statistics and creating lists of states with the lowest deaths per 1000 people and the highest deaths per 1000 people. From these tables, we
+can see that island territories generally had the lowest deaths per thousand, as American Samoa, the Northern Mariana Islands, the Virgin Islands, Hawaii, and Puerto Rico make up 5 of the "best" 6,
+and that the South generally had the highest deaths per thousand, with Oklahoma, Mississippi, West Virginia, Arkansas, Alabama, Tennessee, and Kentucky found withing the "worst" 10.
+```{r}
+usstatestot = usstates %>% group_by(Province_State) %>% summarise(deaths = max(deaths), cases = max(cases), Population = max(Population), 
+                                                                  casespert = 1000 * cases / Population, deathspert = 1000 * deaths / Population) %>% filter(cases > 0, Population > 0)
+usstatestot %>% slice_min(deathspert, n = 10) %>% select(deathspert, casespert, everything())
+usstatestot %>% slice_max(deathspert, n = 10) %>% select(deathspert, casespert, everything())
+```
+
+### Modeling
+Now, we can create a model using our state totals data to see if we can predict deaths per 1000 as a function of cases per 1000. As we can see from the summary of this model's highly significant 
+p-value, cases per 1000 is an important predictor of deaths per 1000, as expected. However, the $R^2$ value tells us that only about 30.5% of the variation in deaths per 1000 is explainable by 
+cases per 1000, meaning that there are likely other significant factors that this very simple model is obviously not accounting for. We can graph our predicted values against the actual values to 
+visualize the accuracy of the model, as shown in the graph below (where the blue points are the actual deaths per 1000 and the red points are the predicted deaths per 1000 using the model). The
+linear trend of the actual data is matched by the linearity of the predictions, but as we can see, there is much more variation in the actual data that the model is not accounting for, which
+aligns with our conclusions form the summary of the model.
+```{r}
+mod = lm(deathspert ~ casespert, data = usstatestot)
+summary(mod)
+usstwpred = usstatestot %>% mutate(pred = predict(mod))
+usstwpred %>% ggplot() + geom_point(aes(x = casespert, y = deathspert), color = "blue") + geom_point(aes(x = casespert, y = pred), color = "red") +
+  labs(title = "Prediction Model vs Actual Deaths/1000", x = "Cases per 1000", y = "Deaths per 1000")
+```
+
+## The Global Data
+Now, using the global data, I would like to perform a similar investigation to what we did to the US earlier. Would a much smaller country have a more effective response to the COVID-19 outbreak? We
+can perform the same process as before, but using the total US statistics and comparing our findings to a small country in the global data. Again, I will first create a visualization comparing
+COVID-19 cases in the US to those of Singapore. Then, we can perform some analysis to see if the trends in new cases and new deaths reported per date are any different between the US and Singapore. 
+Finally, we will create a pair of simple regression models to see how accurately we can predict the total number of deaths using the total number of cases for both the US and Singapore.
+### Visualization
+Let's now compare the US totals to the totals of another country. I've selected Singapore, as the nation was one of the first to control its borders in response to the outbreak and employed a mass
+vaccination campaign that resulted in one of the highest vaccination rates in the world. Compared to the US graph, we see a much quicker plateau in both cases and deaths in mid-2020 followed by two
+notable spikes (likely from virus mutations) and a much larger gap between the total cases (shown in red) and total deaths (shown in blue).
+```{r}
+ustotal %>% filter(cases > 0) %>% ggplot(aes(x = date, y = cases)) + geom_line(aes(color = "cases")) + geom_point(aes(color = "cases")) + geom_line(aes(y = deaths, color = "deaths")) + 
+  geom_point(aes(y = deaths, color = "deaths")) + scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = "COVID-19 in US", y = NULL)
+country = "Singapore"
+global %>% filter(Country_Region == country) %>% filter(cases > 0) %>% ggplot(aes(x = date, y = cases)) + geom_line(aes(color = "cases")) + geom_point(aes(color = "cases")) + 
+  geom_line(aes(y = deaths, color = "deaths")) + geom_point(aes(y = deaths, color = "deaths")) + scale_y_log10() + 
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = str_c("COVID-19 in ", country), y = NULL)
+```
+
+### Analysis
+Much like before, we can create a "new cases" and "new deaths" variable for Singapore and compare its plot to that of the US from earlier. As expected from a country with a much smaller population,
+the "new" cases per day are much lower than the US, but the "new" deaths per day in Singapore does not at all follow a similar trend to the US. For most of the span of the data, Singapore reported 
+(on a log-scale) less than 10 new deaths per day, even when reporting around 10,000 cases per day. Proportionally, it appears that Singapore had more effective treatments, and that someone who
+contracted the COVID-19 virus was more likely to survive if they were in Singapore than in the US.
+```{r}
+ustotal2 %>% ggplot(aes(x = date, y = new_cases)) + geom_line(aes(color = "new_cases")) + geom_point(aes(color = "new_cases")) + geom_line(aes(y = new_deaths, color = "new_deaths")) + 
+  geom_point(aes(y = new_deaths, color = "new_deaths")) + scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = "COVID-19 in US", y = NULL)
+singapore = global %>% filter(Country_Region == country) %>% mutate(new_cases = cases - lag(cases), new_deaths = deaths - lag(deaths))
+singapore %>% ggplot(aes(x = date, y = new_cases)) + geom_line(aes(color = "new_cases")) + geom_point(aes(color = "new_cases")) + geom_line(aes(y = new_deaths, color = "new_deaths")) + 
+  geom_point(aes(y = new_deaths, color = "new_deaths")) + scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + labs(title = "COVID-19 in Singapore", y = NULL)
+```
+
+### Modeling
+Let's create a models to see how well we can use the total number of cases to predict the total number of deaths to date per country. From the summaries of both models and the graphs comparing the
+prediction models' estimates (shown in red) versus the actual number of total deaths (show in blue), we see that the prediction model is more accurate for the US than it is for Singapore. Both models
+still return significant p-values for our estimate and strong $R^2$ values, but the model using the US data has a stronger $R^2$ of 0.9548 when compared to the Singapore model's 0.9239. 
+```{r}
+singus = full_join(ustotal2, singapore, by = "date") %>% select(-c(deathsperm, Province_State, Combined_Key))
+singus2 = tibble(date = singus$date, US_cases = singus$cases.x, US_deaths = singus$deaths.x, US_pop = singus$Population.x, 
+                 Singapore_cases = singus$cases.y, Singapore_deaths = singus$deaths.y, Singapore_pop = singus$Population.y)
+usmod = lm(US_deaths ~ US_cases, data = singus2)
+summary(usmod)
+uspred = singus2 %>% mutate(pred = predict(usmod))
+uspred %>% ggplot() + geom_point(aes(x = US_cases, y = US_deaths), color = "blue") + geom_point(aes(x = US_cases, y = pred), color = "red") +
+  labs(title = "Prediction Model vs Actual Deaths, US", x = "Cases", y = "Deaths")
+singmod = lm(Singapore_deaths ~ Singapore_cases, data = singus2)
+summary(singmod)
+singpred = singus2 %>% mutate(pred = predict(singmod))
+singpred %>% ggplot() + geom_point(aes(x = Singapore_cases, y = Singapore_deaths), color = "blue") + geom_point(aes(x = Singapore_cases, y = pred), color = "red") +
+  labs(title = "Prediction Model vs Actual Deaths, Singapore", x = "Cases", y = "Deaths")
+```
+
+
+### Identifying Biases
+As far as the effects of personal biases on this research go, I intentionally chose Singapore to compare to the US because of how lauded their COVID-19 response was in the early years of the
+pandemic. I wanted to choose a country that I was certain would provide unique visualizations when compared to what we had created in class using the US data. As such, this is clear in the stark
+contrasts in the new visualization and analysis sections of this document, but this choice ultimately led to the creation of a less accurate model in the end.
+
+### Conclusions
+From the investigation into the US data, we can conclude that Texas largely followed the trends in reporting of total cases, total deaths, new cases per day, and new deaths per day when compared to
+the broader US. We also found that, while cases per 1000 were a significant predictor of deaths per 1000 in each US state, cases per 1000 only explained about 30% of the variation in that data. From
+the similar research using the global data, we can conclude that the smaller nation of Singapore had a more effective response to the COVID-19 pandemic when comparing their total cases, total deaths,
+new cases per date, and new deaths per date to those of the US (on a log-scale to account for the large discrepancy in total population). However, when attempting to create simple linear models that
+use the total number of cases as a sole predictor of the total number of deaths, we saw that the total number of cases was a weaker predictor of the total number of deaths in the Singapore model when
+compared to the US model. This aligns with the conclusions of the previous sections: if Singapore had a stronger response to the outbreak, and because they experienced a much lower proportion of 
+deaths per number of cases, factors outside of the number of cases would have a stronger effect on the outcome of those cases.
