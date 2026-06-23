@@ -1,0 +1,145 @@
+---
+title: "NYPD Project"
+author: "Tate Conner"
+date: "2026-06-18"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Setup and Tidying Data
+Ensuring that the necessary library is installed and reading in data.
+```{r, echo=TRUE, results='hide', error=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+nypds = read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+```
+Now that our data is read in, we want to tidy it up before doing any statistical analysis.
+First, we can drop any columns deemed unnecessary.
+```{r}
+nypds = subset(nypds, select = -c(INCIDENT_KEY, LOC_OF_OCCUR_DESC, JURISDICTION_CODE, LOC_CLASSFCTN_DESC, LOCATION_DESC, X_COORD_CD,
+                           Y_COORD_CD, Latitude, Longitude, Lon_Lat))
+```
+
+Next, we can remove any entries where any data point contains an "NA" or a "(null)". This takes us from the original 29,744 observations down to 18,772 complete observations.
+```{r}
+nypds[nypds == "(null)"] = NA
+nypds2 = na.omit(nypds)
+```
+Finally, we can convert our 'chr' type columns to usable 'fctr' variables, our date column to a 'mdy' variable, and our time column to a 'hms' variable.
+```{r}
+nypds3 = nypds2 %>% mutate(across(where(is.character), as.factor))
+nypds3$OCCUR_DATE = mdy(nypds3$OCCUR_DATE)
+nypds3$OCCUR_TIME = hms(nypds3$OCCUR_TIME)
+```
+A summary of this tidied and transformed data set shows that there are no incomplete cases present.
+```{r}
+summary(nypds3)
+```
+Our data is now ready for visualization and analysis. 
+
+### Visualizations and Analysis: Linear Model
+Do any of the boroughs see a higher proportion of shooting incidents that result in a murder when compared to the others?
+```{r}
+ggplot(nypds3, aes(x = BORO, fill = factor(STATISTICAL_MURDER_FLAG))) + geom_bar(position = "fill") + 
+  scale_y_continuous(labels = scales::percent) + theme_minimal() +
+  labs(title = "Proportion of Shootings Resulting in Murder per Borough", x = "Borough", y = "Proportions", fill = "Classified as a Murder?")
+```
+
+The above bar chart shows us that the amount of shooting incidents resulting in a murder hovers around 22% regardless of which borough the incident took place in.
+Does the age of the victim have any effect on the fatality of the shooting? Because we want to focus on a specific variable, we have to do a bit more tidying to the
+data, omitting any cases where the age of the victim was not properly reported.
+```{r}
+nypds4 = nypds3 %>% filter(VIC_AGE_GROUP != "1022")
+nypds4 = nypds4 %>% filter(VIC_AGE_GROUP != "UNKNOWN")
+ggplot(nypds4, aes(x = VIC_AGE_GROUP, fill = factor(STATISTICAL_MURDER_FLAG))) + geom_bar(position = "fill") + 
+  scale_y_continuous(labels = scales::percent) + theme_minimal() +
+  labs(title = "Proportion of Shootings Resulting in Murder by Victim's Age", x = "Age Group of Victim", y = "Proportions", fill = "Classified as a Murder?")
+```
+
+This new bar chart seems to be more telling than the previous. We can see a steady increase in the percentage of incidents that resulted in a murder as the age of the victims increase.
+We can explore this further by creating a linear probability model where classification as murder is the response variable to the victim's age group.
+```{r}
+m1 = lm(STATISTICAL_MURDER_FLAG ~ VIC_AGE_GROUP, data = nypds4)
+summary(m1)
+```
+From the summary of the above model, we can see that R has made our "under 18" age group the baseline for regression. We also see that each estimate has a statistically significant p-value,
+so there is enough information to show that there is significant differences in probability of murder resulting from a shooting for each age group.
+Below is a table that shows the estimated probability that the reported shooting incident resulted in a murder separated by age group created using the information from the above model's
+summary.
+```{r, echo=FALSE}
+table1 = data.frame(
+  Age_Group = c("Under 18", "18 - 24", "25 - 44", "45 - 64", "65 and Older"),
+  Murder_Probability = c("14.4%", "18.1%", "22.6%", "25.5%", "32.7%")
+)
+knitr::kable(table1)
+```
+
+These values align closely to the values seen in our second bar chart. From this model, we can conclude that the age of the victim has a statistically significant effect on the fatality
+of a shooting, where older victims face a higher risk of death. However, we also obtained a multiple $R^2$ value 0.007179, which means that only $0.72%$ of the variance in the 
+complete data set is explained by this model. This tells us that a majority of what determines the fatality of a shooting is not accounted for by the relationship tested by our model, and
+thus, age alone is a poor predictor of fatality of any singular shooting incident.
+
+### Visualizations and Analysis: Logistic Model
+Now, we can create a logistic regression model to try and account for relationships that the linear model couldn't. The new model is still testing the relationship between
+an incident's fatality and the age of the victim, but is now controlling for the effects from the borough where the incident took place and the sex of the victim.
+```{r}
+m2 = glm(STATISTICAL_MURDER_FLAG ~ VIC_AGE_GROUP + BORO + VIC_SEX, data = nypds4, family = binomial(link = "logit"))
+summary(m2)
+```
+From the summary of the new model, we can see that R has again selected the "under 18" age group as a baseline for that factor, the Bronx as the baseline for the effects from boroughs, and
+female as the baseline for the victim's sex. We again see highly significant p-values for the effects of age, and the estimated log-odds from the model increases as age increases. We can
+also see that the estimated logs-odds for each borough is a negative value and the estimated log-odds for male victims is a negative value as well. Before returning to our analysis of the
+effect of the victim's age, let's interpret the findings of the other variables. We can see that our borough effect only has three significant values, so we can conclude that, holding the
+victim's age and sex constant, shootings in Brooklyn, Manhattan, and Queens are less likely to result in murder than shootings in the Bronx. Additionally, the is significant evidence to
+conclude that, holding the victim's age and borough constant, male victims are less likely to die in shootings than female victims. Next, we can exponentiate the estimates of the log-odds 
+for each age group to create odds ratios.
+
+```{r, echo=FALSE}
+oddsr = c(exp(0.28852), exp(0.57228), exp(0.71720), exp(1.04838))
+table2 = data.frame(
+  Age_Group = c("18 - 24", "25 - 44", "45 - 64", "65 and Older"),
+  Odds_vs_U18 = c("1.33", "1.77", "2.05", "2.85")
+)
+knitr::kable(table2)
+```
+
+We can interpret the findings from this new model using the above table, where we can see that, while controlling for borough and the victim's sex, victims aged 18 - 24 have 1.33 times the
+odds of being murdered in a shooting compared to those under 18. This comparative likelihood increases as the age group increases, much like our findings from the first model.
+
+```{r, message=FALSE}
+m22 = as_tibble(summary(m2)$coefficients, rownames = "term") %>%
+  rename(estimate = Estimate, std.error = `Std. Error`, statistic = `z value`, p.value = `Pr(>|z|)`) %>%
+  bind_cols(as_tibble(confint(m2))) %>% rename(conf.low = `2.5 %`, conf.high = `97.5 %`) %>%
+  mutate(estimate = exp(estimate), conf.low = exp(conf.low), conf.high = exp(conf.high)) %>%
+  filter(str_detect(term, "VIC_AGE_GROUP"))
+ggplot(m22, aes(x = estimate, y = term)) + geom_errorbar(aes(xmin = conf.low, xmax = conf.high)) +
+  geom_point(color = "red") + labs(title = "Odds of a Shooting Resulting in Murder by Victim Age Group", subtitle = "Compared to baseline age group with Relative Odds = 1.0",
+                                   x = "Odds Ratio with 95% CI", y = "Victim Age Group") + geom_vline(xintercept = 1, col = "light blue")
+```
+
+The above graph further illustrates this step-wise motion, and we can see that the value of the baseline group (relative odds = 1.0) falls outside of each 95% confidence interval for our
+model's estimates (as shown by the blue line at $x=1$). The CI margins for our two youngest age groups are rather narrow, but the margins for the oldest age group is quite wide. This is
+likely due to the fact that shootings with elderly victims were much rarer in the original data set. Though these cases are rarer, there is still significant evidence that the risk of
+fatality is much higher, the model is much less precise in its estimate of the exact odds ratio compared to the other age groups.
+
+For the logistic regression model, we can compare the null and residual deviance and use the AIC to judge the quality of our model. We have concluded that the victim's age, sex, and 
+borough have a significant statistical impact on the fatality of a shooting, but that the problem is much more complex than can be explained by these three variables. With a null 
+deviance of 18927, a residual deviance of 18759, and an AIC of 18781, the amount of unexplained residual deviance is quite high.
+
+### Bias Identification and Conclusion
+Overall, as shown by both models, we can conclude that there is significant statistical evidence that the age of the victim has an effect on if a shooting incident results in a murder, but 
+that effect is but a small piece of a much larger puzzle. To start, only about two-thirds of the reports in the original data set were complete enough to use in this analysis. Even after removing
+variables like 'LOCATION_DESC' that contained a large amount of empty responses, 'na.omit()' cut the number of observations down from nearly 30,000 to around 19,000. For my chosen variables of
+analysis, the victim's age and if the shooting was fatal or not, the provided categories are not remarkably specific. "45 - 64" and "25 - 44" are much wider ranges in this case than "18 - 24" is, and
+there's no distinction between victims who were pronounced dead upon first response or those who passed later from injuries turned fatal. The data does not account for important factors like police 
+response time, proximity to a trauma center, or location of the wound on the victim. As far as recognizing personal biases, it is important to recognize the deliberate scoping choice made by 
+intentionally centering my analysis on the victim and omitting perpetrator demographics in an effort to avoid contributing to harmful stereotypes and stigmatizing narratives. The demographics of
+both perpetrators and victims are necessary data for comprehensive criminal analysis, and it is unrealistic for every police report to include specifics like the relationship between victim and
+perpetrator or socioeconomic factors that might be at play, but I personally don't believe I could come to any ethical or reliable conclusions using racial demographic counts alone; to do so would
+be ignoring any systemic biases within the data set's reporting and falsely attributing the wide range of lacking environmental and economic contexts to a single demographic.  
+
+
